@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>集計｜ぬりあわせ</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/app.css">
+<style>
+  .agg .cell { position: relative; background: var(--surface) !important; }
+  .agg .cell .bar { position: absolute; left: 0; right: 0; }
+  .agg .cell .bar.y { bottom: 0; background: var(--yes); }
+  .agg .cell .bar.m { background: var(--maybe); }
+  .agg .cells { touch-action: auto; cursor: pointer; }
+  .detail { min-height: 74px; }
+  .detail .when { font-family: var(--mono); font-weight: 700; }
+  .person { margin-top: 16px; }
+  .person .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .dur { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .dur button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="brand">ぬり<span>あわせ</span></p>
+    <p class="tagline">主催者用 ・ 集計とログ</p>
+  </header>
+
+  <p class="notice err" id="err" role="alert"></p>
+
+  <main id="main" hidden>
+    <h1 id="title"></h1>
+    <p class="lead" id="range"></p>
+
+    <div class="card">
+      <label>回答してもらうURL</label>
+      <div class="linkbox">
+        <input type="text" id="voteUrl" readonly>
+        <button class="btn-sm" id="copyVote">コピー</button>
+      </div>
+    </div>
+
+    <h2>おすすめの時間帯 <span class="count" id="cnt"></span></h2>
+    <div class="dur" id="dur" role="group" aria-label="ほしい所要時間"></div>
+    <div id="best"></div>
+
+    <h2>みんなの回答を重ねる</h2>
+    <div id="agg"></div>
+    <p class="legend">
+      <span><i style="background:var(--yes)"></i>出席可能の人数</span>
+      <span><i style="background:var(--maybe)"></i>未定の人数</span>
+      <span>棒の高さ＝回答者全体に対する割合</span>
+    </p>
+    <div class="card detail" id="detail" style="margin-top:12px">
+      <p class="hint" style="margin:0">マス目をタップすると、その15分に誰が参加できるかを表示します。</p>
+    </div>
+
+    <h2>回答した人 <span class="count" id="cnt2"></span></h2>
+    <div id="people"></div>
+
+    <h2>修正のログ <span class="count" id="cnt3"></span></h2>
+    <div id="logs"></div>
+  </main>
+
+</div>
+
+<script type="module">
+import { $, el, api, qs, PaintGrid, tally, bestWindows, fmtDate, fmtDow, fmtTime, fmtRange, slotMinAt, stateLabel } from '/assets/app.js';
+
+const token = qs('a');
+const err = $('#err');
+if (!token) err.textContent = 'URLが正しくありません。作成時に発行された集計URLを開いてください。';
+
+let ev, responses, logs, counts;
+
+const jpTime = (t) => new Date(t).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+async function boot() {
+  try {
+    const d = await api('/api/a/' + encodeURIComponent(token));
+    ev = d.event; responses = d.responses; logs = d.logs;
+    counts = tally(ev, responses);
+    render();
+    $('#main').hidden = false;
+  } catch (e) {
+    err.textContent = e.message;
+  }
+}
+if (token) boot();
+
+function render() {
+  $('#title').textContent = ev.title;
+  const d1 = ev.dates[0], d2 = ev.dates[ev.dates.length - 1];
+  $('#range').textContent =
+    `${fmtDate(d1)}(${fmtDow(d1)}) 〜 ${fmtDate(d2)}(${fmtDow(d2)})　${fmtTime(ev.start_min)}–${fmtTime(ev.end_min)}　${ev.slot_min}分きざみ`;
+  $('#voteUrl').value = `${location.origin}/vote.html?e=${ev.public_token}`;
+  $('#cnt').textContent = `${responses.length}人が回答`;
+  $('#cnt2').textContent = `${responses.length}人`;
+  $('#cnt3').textContent = `${logs.length}件`;
+
+  renderDurations();
+  renderAgg();
+  renderPeople();
+  renderLogs();
+}
+
+/* ---- おすすめ時間帯 ---- */
+function renderDurations() {
+  const box = $('#dur');
+  box.innerHTML = '';
+  const opts = [30, 60, 90, 120, 180].filter((m) => m % ev.slot_min === 0 && m <= ev.end_min - ev.start_min);
+  if (!opts.includes(ev.slot_min)) opts.unshift(ev.slot_min);
+  const pick = opts.includes(60) ? 60 : opts[0];
+  opts.forEach((m) => {
+    const b = el('button', 'btn-sm', m >= 60 ? `${m / 60}時間` : `${m}分`);
+    b.setAttribute('aria-pressed', String(m === pick));
+    b.addEventListener('click', () => {
+      box.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      renderBest(m);
+    });
+    box.append(b);
+  });
+  renderBest(pick);
+}
+
+function renderBest(minutes) {
+  const host = $('#best');
+  host.innerHTML = '';
+  if (!responses.length) {
+    host.append(el('p', 'empty', 'まだ回答がありません。上のURLを共有してください。'));
+    return;
+  }
+  const wins = bestWindows(ev, responses, minutes / ev.slot_min, 6);
+  if (!wins.length) {
+    host.append(el('p', 'empty', `${minutes}分つづけて参加できる人が、まだ見つかりません。時間を短くしてお試しください。`));
+    return;
+  }
+  wins.forEach((w, i) => {
+    const item = el('div', 'item');
+    const row = el('div', 'rank');
+    row.append(el('span', 'n', String(i + 1).padStart(2, '0')));
+    row.append(el('span', 'when', fmtRange(ev, w.date, w.start, w.end)));
+    const cnt = el('div', 'cnt');
+    cnt.innerHTML = `<b></b> 人 参加可能`;
+    cnt.querySelector('b').textContent = w.yes.length;
+    if (w.maybe.length) cnt.append(el('div', 'meta', `＋ 未定 ${w.maybe.length}人`));
+    row.append(cnt);
+    item.append(row);
+    const names = el('div', 'note');
+    names.textContent = `可能: ${w.yes.join('、') || 'なし'}` + (w.maybe.length ? `／未定: ${w.maybe.join('、')}` : '');
+    item.append(names);
+    host.append(item);
+  });
+}
+
+/* ---- 重ね合わせ ---- */
+function renderAgg() {
+  const g = new PaintGrid($('#agg'), ev, { readOnly: true });
+  g.box.classList.add('agg');
+  const total = Math.max(1, responses.length);
+
+  for (const date of ev.dates) {
+    const { yes, maybe } = counts[date];
+    g.cellsByDate.get(date).forEach((cell, i) => {
+      cell.dataset.v = '0';
+      const y = yes[i], m = maybe[i];
+      if (y) {
+        const b = el('div', 'bar y');
+        b.style.height = (y / total * 100) + '%';
+        cell.append(b);
+      }
+      if (m) {
+        const b = el('div', 'bar m');
+        b.style.height = (m / total * 100) + '%';
+        b.style.bottom = (y / total * 100) + '%';
+        cell.append(b);
+      }
+      cell.title = `${fmtTime(slotMinAt(ev, i))} 可能${y}人 / 未定${m}人`;
+    });
+  }
+
+  $('#agg').addEventListener('click', (e) => {
+    const cell = e.target.closest('.cell');
+    if (!cell) return;
+    showDetail(cell.dataset.date, Number(cell.dataset.i));
+  });
+}
+
+function showDetail(date, i) {
+  const yes = [], maybe = [];
+  for (const r of responses) {
+    const c = (r.slots[date] || '')[i];
+    if (c === '1') yes.push(r.name);
+    else if (c === '2') maybe.push(r.name);
+  }
+  const box = $('#detail');
+  box.innerHTML = '';
+  box.append(el('p', 'when', fmtRange(ev, date, i, i + 1)));
+  box.append(el('p', 'note', `出席可能 ${yes.length}人: ${yes.join('、') || '—'}`));
+  box.append(el('p', 'note', `未定 ${maybe.length}人: ${maybe.join('、') || '—'}`));
+}
+
+/* ---- 回答者一覧 ---- */
+function renderPeople() {
+  const host = $('#people');
+  host.innerHTML = '';
+  if (!responses.length) {
+    host.append(el('p', 'empty', 'まだ回答がありません。'));
+    return;
+  }
+  for (const r of responses) {
+    const wrap = el('div', 'person');
+    const head = el('div', 'head');
+    head.append(el('span', 'who', r.name));
+    head.append(el('span', 'meta', `提出 ${jpTime(r.created_at)}` + (r.revision > 1 ? ` ／ ${r.revision - 1}回修正（最終 ${jpTime(r.updated_at)}）` : '')));
+    wrap.append(head);
+    if (r.note) {
+      const n = el('div', 'item');
+      n.append(el('div', 'note', r.note));
+      wrap.append(n);
+    }
+    const gh = el('div');
+    gh.style.marginTop = '8px';
+    wrap.append(gh);
+    host.append(wrap);
+    const g = new PaintGrid(gh, ev, { readOnly: true });
+    g.setData(r.slots);
+  }
+}
+
+/* ---- 変更ログ ---- */
+function renderLogs() {
+  const host = $('#logs');
+  host.innerHTML = '';
+  if (!logs.length) {
+    host.append(el('p', 'empty', 'まだ修正はありません。回答者が塗り直すと、変更点がここに残ります。'));
+    return;
+  }
+  for (const l of logs) {
+    const item = el('div', 'item');
+    const head = el('div', 'head');
+    head.append(el('span', 'who', l.who));
+    head.append(el('span', 'meta', ` ${jpTime(l.changed_at)} ・ ${l.revision}回目の内容に更新`));
+    item.append(head);
+
+    if (l.name_after != null) item.append(el('div', 'diffline', `名前: ${l.name_before} → ${l.name_after}`));
+    if (l.note_after != null) item.append(el('div', 'diffline', `備考: ${l.note_before || '(なし)'} → ${l.note_after || '(なし)'}`));
+
+    const list = el('div');
+    list.style.marginTop = '4px';
+    l.diff.slice(0, 40).forEach((d) => {
+      const line = el('div', 'diffline');
+      line.append(document.createTextNode(fmtRange(ev, d.date, d.start, d.end) + '　'));
+      const a = el('span', 'to' + d.from, stateLabel(Number(d.from)));
+      const b = el('span', 'to' + d.to, stateLabel(Number(d.to)));
+      line.append(a, document.createTextNode(' → '), b);
+      list.append(line);
+    });
+    if (l.diff.length > 40) list.append(el('div', 'meta', `ほか ${l.diff.length - 40} か所`));
+    if (l.diff.length) item.append(list);
+    host.append(item);
+  }
+}
+
+$('#copyVote').addEventListener('click', async (e) => {
+  try {
+    await navigator.clipboard.writeText($('#voteUrl').value);
+    e.target.textContent = 'コピーしました';
+  } catch {
+    $('#voteUrl').select();
+    e.target.textContent = '選択しました';
+  }
+  setTimeout(() => { e.target.textContent = 'コピー'; }, 1800);
+});
+</script>
+</body>
+</html>

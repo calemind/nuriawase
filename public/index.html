@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ぬりあわせ｜塗って出す日程調整</title>
+<meta name="description" content="15分きざみのシフト表を塗って提出するだけの日程調整。回答者はアプリ不要、URLを開くだけ。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/app.css">
+<style>
+  .preview { display: flex; flex-direction: column; gap: 3px; margin: 18px 0 26px; }
+  .pvrow { display: flex; gap: 2px; height: 16px; }
+  .pvrow i { flex: 1; background: #e8ebf2; border-radius: 1px; }
+  .pvrow i.y { background: var(--yes); }
+  .pvrow i.m { background: var(--maybe); }
+  .pvcap { font-family: var(--mono); font-size: 11px; color: var(--ink-3); letter-spacing: .05em; }
+  .mine { font-size: 13px; }
+  .mine a { color: var(--yes); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="brand">ぬり<span>あわせ</span></p>
+    <p class="tagline">15分きざみで、塗って出す日程調整</p>
+  </header>
+
+  <h1>予定を「塗って」集める</h1>
+  <p class="lead">
+    候補日をボタンで選ぶかわりに、回答者は 15分きざみのシフト表を指でなぞって塗ります。<br>
+    <b style="color:var(--yes)">青＝出席できる</b> ／ <b style="color:#a8760a">黄＝未定・行けるかも</b>。回答はあなただけが見られます。
+  </p>
+
+  <div class="preview" aria-hidden="true">
+    <div class="pvrow" data-p="0000011111111100000022221111000000"></div>
+    <div class="pvrow" data-p="0000000011122221111111110000000000"></div>
+    <div class="pvrow" data-p="0011111111110000000001111111110000"></div>
+    <p class="pvcap">10:00 —————————————————————————— 23:00</p>
+  </div>
+
+  <div id="setup">
+    <div class="card">
+      <div class="field">
+        <label for="title">イベント名</label>
+        <input type="text" id="title" maxlength="80" placeholder="例）11月の練習日程" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="memo">回答者へのひとこと<span style="font-weight:400;color:var(--ink-3)">（任意）</span></label>
+        <textarea id="memo" maxlength="500" placeholder="例）30分以上参加できる時間帯を塗ってください。遅れて来られる方は黄色でお願いします。"></textarea>
+      </div>
+      <div class="field row2">
+        <div>
+          <label for="sd">開始日</label>
+          <input type="date" id="sd">
+        </div>
+        <div>
+          <label for="ed">終了日</label>
+          <input type="date" id="ed">
+        </div>
+      </div>
+      <div class="field row2">
+        <div>
+          <label for="st">1日の開始時刻</label>
+          <input type="time" id="st" value="10:00" step="900">
+        </div>
+        <div>
+          <label for="et">1日の終了時刻</label>
+          <input type="time" id="et" value="23:00" step="900">
+        </div>
+      </div>
+      <div class="field">
+        <label for="slot">1コマの長さ</label>
+        <select id="slot">
+          <option value="15" selected>15分</option>
+          <option value="30">30分</option>
+          <option value="10">10分</option>
+          <option value="60">60分</option>
+        </select>
+        <p class="hint">細かくするほど正確ですが、スマホでは塗りにくくなります。まずは15分がおすすめです。</p>
+      </div>
+    </div>
+
+    <p class="notice err" id="err" role="alert"></p>
+    <p style="margin-top:14px"><button class="btn-main" id="go">日程調整をつくる</button></p>
+
+    <div id="mine" hidden>
+      <h2>このブラウザでつくった日程調整</h2>
+      <div id="mineList"></div>
+    </div>
+  </div>
+
+  <div id="done" hidden>
+    <div class="notice ok" style="margin-bottom:18px">できました。下の2つのURLを使い分けてください。</div>
+
+    <div class="card">
+      <label>① 回答してもらうURL（LINEなどで共有）</label>
+      <p class="hint" style="margin-top:0">アプリのインストールは不要です。開けばそのまま塗れます。</p>
+      <div class="linkbox">
+        <input type="text" id="voteUrl" readonly>
+        <button class="btn-sm" data-copy="voteUrl">コピー</button>
+      </div>
+      <p style="margin:10px 0 0"><a href="#" id="voteOpen" target="_blank" rel="noopener">回答ページを開く</a></p>
+    </div>
+
+    <div class="card">
+      <label>② あなた専用の集計URL</label>
+      <p class="hint" style="margin-top:0">みんなの回答と修正ログが見られます。<b>他の人には渡さないでください。</b> このURLを知っている人だけが集計を見られます。</p>
+      <div class="linkbox">
+        <input type="text" id="adminUrl" readonly>
+        <button class="btn-sm" data-copy="adminUrl">コピー</button>
+      </div>
+      <p style="margin:10px 0 0"><a href="#" id="adminOpen">集計ページを開く</a></p>
+    </div>
+
+    <p class="notice warn" style="margin-top:14px">
+      集計URLは再発行できません。ブックマークするか、自分宛てにメモを送って保管してください。
+    </p>
+  </div>
+
+</div>
+
+<script type="module">
+import { $, api } from '/assets/app.js';
+
+/* ヒーローのプレビュー帯 */
+document.querySelectorAll('.pvrow').forEach((row) => {
+  for (const ch of row.dataset.p) {
+    const i = document.createElement('i');
+    if (ch === '1') i.className = 'y';
+    if (ch === '2') i.className = 'm';
+    row.append(i);
+  }
+});
+
+/* 日付の初期値: 明日から2週間 */
+const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const today = new Date();
+$('#sd').value = iso(new Date(today.getTime() + 86400000));
+$('#ed').value = iso(new Date(today.getTime() + 86400000 * 14));
+
+const toMin = (v) => {
+  const [h, m] = String(v).split(':').map(Number);
+  return h * 60 + m;
+};
+
+const err = $('#err');
+const show = (msg) => { err.textContent = msg; err.scrollIntoView({ block: 'nearest' }); };
+
+/* 保存済みの一覧 */
+const STORE = 'nuriawase.mine';
+const load = () => { try { return JSON.parse(localStorage.getItem(STORE)) || []; } catch { return []; } };
+function renderMine() {
+  const list = load();
+  if (!list.length) return;
+  $('#mine').hidden = false;
+  const box = $('#mineList');
+  box.innerHTML = '';
+  for (const e of list.slice().reverse()) {
+    const d = document.createElement('div');
+    d.className = 'item mine';
+    d.innerHTML = `<div class="who"></div>
+      <div class="meta"></div>
+      <div style="margin-top:6px"><a class="a1" href="#">集計を見る</a> ・ <a class="a2" href="#" target="_blank" rel="noopener">回答ページ</a></div>`;
+    d.querySelector('.who').textContent = e.title;
+    d.querySelector('.meta').textContent = `${e.sd} 〜 ${e.ed}`;
+    d.querySelector('.a1').href = '/admin.html?a=' + e.admin;
+    d.querySelector('.a2').href = '/vote.html?e=' + e.pub;
+    box.append(d);
+  }
+}
+renderMine();
+
+$('#go').addEventListener('click', async () => {
+  show('');
+  const payload = {
+    title: $('#title').value.trim(),
+    memo: $('#memo').value.trim(),
+    start_date: $('#sd').value,
+    end_date: $('#ed').value,
+    start_min: toMin($('#st').value),
+    end_min: toMin($('#et').value),
+    slot_min: Number($('#slot').value),
+  };
+  if (!payload.title) return show('イベント名を入力してください。');
+  if (!payload.start_date || !payload.end_date) return show('開始日と終了日を入力してください。');
+  if (payload.end_min <= payload.start_min) return show('終了時刻は開始時刻より後にしてください。');
+  if ((payload.end_min - payload.start_min) % payload.slot_min !== 0) {
+    return show('時間帯の長さが1コマの長さで割り切れません。開始・終了時刻を調整してください。');
+  }
+
+  const btn = $('#go');
+  btn.disabled = true; btn.textContent = 'つくっています…';
+  try {
+    const r = await api('/api/events', 'POST', payload);
+    const base = location.origin;
+    const vote = `${base}/vote.html?e=${r.public_token}`;
+    const admin = `${base}/admin.html?a=${r.admin_token}`;
+    $('#voteUrl').value = vote;
+    $('#adminUrl').value = admin;
+    $('#voteOpen').href = vote;
+    $('#adminOpen').href = admin;
+    const mine = load();
+    mine.push({ title: payload.title, sd: payload.start_date, ed: payload.end_date, pub: r.public_token, admin: r.admin_token });
+    localStorage.setItem(STORE, JSON.stringify(mine.slice(-30)));
+    $('#setup').hidden = true;
+    $('#done').hidden = false;
+    scrollTo({ top: 0 });
+  } catch (e) {
+    show(e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '日程調整をつくる';
+  }
+});
+
+document.addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-copy]');
+  if (!b) return;
+  const input = document.getElementById(b.dataset.copy);
+  try {
+    await navigator.clipboard.writeText(input.value);
+    b.textContent = 'コピーしました';
+  } catch {
+    input.select();
+    b.textContent = '選択しました';
+  }
+  setTimeout(() => { b.textContent = 'コピー'; }, 1800);
+});
+</script>
+</body>
+</html>

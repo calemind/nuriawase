@@ -1,0 +1,16 @@
+{
+  "name": "nuriawase",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev --local",
+    "db:create": "wrangler d1 create nuriawase",
+    "db:init:local": "wrangler d1 execute nuriawase --local --file=./schema.sql",
+    "db:init": "wrangler d1 execute nuriawase --remote --file=./schema.sql",
+    "deploy": "wrangler pages deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}
