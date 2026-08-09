@@ -2,8 +2,7 @@ name = "nuriawase"
 compatibility_date = "2026-01-01"
 pages_build_output_dir = "public"
 
-database_id = "2a859db6-39e1-40a6-84e9-65481dbfcac00"
 [[d1_databases]]
 binding = "DB"
 database_name = "nuriawase"
-database_id = "ここに-D1-の-database-id-を貼る"
+database_id = "2a859db6-39e1-40a6-84e9-65481dbfcac00"
