@@ -5,4 +5,4 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "nuriawase"
-database_id = "2a859db6-39e1-40a6-84e9-65481dbfcac00"
+database_id = "2a859db6-39e1-40a6-84e9-65481dbfcacc"
