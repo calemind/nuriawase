@@ -6,3 +6,7 @@ pages_build_output_dir = "public"
 binding = "DB"
 database_name = "nuriawase"
 database_id = "2a859db6-39e1-40a6-84e9-65481dbfcacc"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "nuriawase-images"
