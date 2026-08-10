@@ -33,7 +33,7 @@
       </div>
       <div class="field">
         <label for="note">備考<span style="font-weight:400;color:var(--ink-3)">（任意）</span></label>
-        <textarea id="note" maxlength="500" placeholder="例）20時以降は30分だけ遅れます。車が出せます。"></textarea>
+        <textarea id="note" maxlength="500" placeholder="例）8月12日の黄色マーカーは、塾バイトのシフトが未発表のため"></textarea>
       </div>
     </div>
 
@@ -44,9 +44,15 @@
       <button class="tool" data-tool="2" aria-pressed="false"><span class="chip"></span>未定</button>
       <button class="tool" data-tool="0" aria-pressed="false"><span class="chip"></span>消す</button>
       <span class="spacer"></span>
+      <button class="btn-sm" id="undo" disabled>↩ 戻す</button>
+      <button class="btn-sm" id="redo" disabled>やり直す ↪</button>
+    </div>
+
+    <div class="toolbar toolbar-2" role="group" aria-label="表示をかえる">
       <button class="btn-sm" id="zoomOut" aria-label="表示をせまくする">−</button>
-      <span class="tool" style="border:none;background:none;padding:0 2px;font-family:var(--mono)" id="zoomLabel">×1</span>
+      <span class="zoomlabel" id="zoomLabel">×1</span>
       <button class="btn-sm" id="zoomIn" aria-label="表示をひろげる">＋</button>
+      <span class="spacer"></span>
       <button class="btn-sm" id="clear">全部消す</button>
     </div>
 
@@ -58,8 +64,9 @@
       <span><i style="background:#e8ebf2"></i>参加できない</span>
     </p>
     <p class="hint" style="margin:10px 2px 0">
-      色をえらんで、マス目をなぞると塗れます。左の日付をタップするとその日をまとめて塗れます。
-      細かく塗りたいときは ＋ で表示を広げてください。
+      色をえらんで、マス目をなぞると塗れます。塗りまちがえたら「戻す」で取り消せます。<br>
+      <b>画面を上下に動かすときは、左の日付の列をなぞってください。</b>
+      日付をタップするとその日をまとめて塗れます。細かく塗りたいときは ＋ で表示を広げてください。
     </p>
   </main>
 
@@ -99,9 +106,15 @@ function updateStat() {
   $('#stat').textContent = `出席可能 ${h(y)}時間 ／ 未定 ${h(m)}時間`;
 }
 
+function syncHistoryButtons() {
+  $('#undo').disabled = !grid.canUndo();
+  $('#redo').disabled = !grid.canRedo();
+}
+
 function buildGrid() {
-  grid = new PaintGrid($('#grid'), ev, { onChange: updateStat });
+  grid = new PaintGrid($('#grid'), ev, { onChange: updateStat, onHistory: syncHistoryButtons });
   updateStat();
+  syncHistoryButtons();
 
   document.querySelectorAll('.tool[data-tool]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -109,6 +122,9 @@ function buildGrid() {
       grid.setTool(b.dataset.tool);
     });
   });
+
+  $('#undo').addEventListener('click', () => grid.undo());
+  $('#redo').addEventListener('click', () => grid.redo());
 
   let zoom = 1;
   const applyZoom = () => { grid.fit(zoom); $('#zoomLabel').textContent = '×' + zoom; };
@@ -139,6 +155,7 @@ async function boot() {
       $('#note').value = d.response.note;
       grid.setData(d.response.slots);
       updateStat();
+      syncHistoryButtons();
       const box = $('#editing');
       box.hidden = false;
       box.textContent = `提出済みの内容を読み込みました（${d.response.revision}回目の内容）。塗り直して「修正を保存する」を押してください。`;
