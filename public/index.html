@@ -81,6 +81,15 @@
         </select>
         <p class="hint">細かくするほど正確ですが、スマホでは塗りにくくなります。まずは15分がおすすめです。</p>
       </div>
+      <div class="field">
+        <label for="logo">ロゴ画像<span style="font-weight:400;color:var(--ink-3)">（任意）</span></label>
+        <input type="file" id="logo" accept="image/png,image/jpeg,image/webp">
+        <p class="hint">回答ページの右上に小さく表示します。PNG・JPEG・WebPに対応。大きい画像は自動で縮小します。</p>
+        <div id="logoPreview" hidden style="margin-top:10px">
+          <img id="logoImg" alt="選んだ画像" style="height:48px;width:auto;max-width:132px;object-fit:contain;border:1px solid var(--line);border-radius:6px;vertical-align:middle">
+          <button class="btn-sm" id="logoClear" style="margin-left:10px">取り消す</button>
+        </div>
+      </div>
     </div>
 
     <p class="notice err" id="err" role="alert"></p>
@@ -173,6 +182,54 @@ function renderMine() {
 }
 renderMine();
 
+/* ロゴ画像: 選んだらプレビューを出し、送信前にブラウザ側で縮小する */
+const LOGO_MAX_PX = 400;
+let logoBlob = null;
+
+async function shrinkImage(file) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, LOGO_MAX_PX / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * scale));
+  const h = Math.max(1, Math.round(bmp.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  bmp.close?.();
+  const toBlob = (type, q) => new Promise((r) => canvas.toBlob(r, type, q));
+  return (await toBlob('image/webp', 0.9)) || (await toBlob('image/png'));
+}
+
+function clearLogo() {
+  logoBlob = null;
+  $('#logo').value = '';
+  $('#logoPreview').hidden = true;
+  const img = $('#logoImg');
+  if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+  img.removeAttribute('src');
+}
+
+$('#logo').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return clearLogo();
+  if (file.size > 8 * 1024 * 1024) {
+    clearLogo();
+    return show('画像が大きすぎます。8MB以下のファイルを選んでください。');
+  }
+  try {
+    logoBlob = await shrinkImage(file);
+    const img = $('#logoImg');
+    if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(logoBlob);
+    $('#logoPreview').hidden = false;
+    show('');
+  } catch {
+    clearLogo();
+    show('この画像は読み込めませんでした。別のファイルをお試しください。');
+  }
+});
+
+$('#logoClear').addEventListener('click', clearLogo);
+
 $('#go').addEventListener('click', async () => {
   show('');
   const payload = {
@@ -195,6 +252,24 @@ $('#go').addEventListener('click', async () => {
   btn.disabled = true; btn.textContent = 'つくっています…';
   try {
     const r = await api('/api/events', 'POST', payload);
+
+    if (logoBlob) {
+      btn.textContent = '画像を送っています…';
+      try {
+        const res = await fetch('/api/a/' + r.admin_token + '/image', {
+          method: 'PUT',
+          headers: { 'content-type': logoBlob.type },
+          body: logoBlob,
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => null);
+          alert('日程調整はできましたが、画像だけ登録できませんでした。\n' + (d?.error || ''));
+        }
+      } catch {
+        alert('日程調整はできましたが、画像だけ登録できませんでした。');
+      }
+    }
+
     const base = location.origin;
     const vote = `${base}/vote.html?e=${r.public_token}`;
     const admin = `${base}/admin.html?a=${r.admin_token}`;
