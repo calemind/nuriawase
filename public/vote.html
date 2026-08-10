@@ -14,8 +14,11 @@
 <div class="wrap">
 
   <header class="masthead">
-    <p class="brand">ぬり<span>あわせ</span></p>
-    <p class="tagline">15分きざみで、塗って出す日程調整</p>
+    <div class="mast-text">
+      <p class="brand">ぬり<span>あわせ</span></p>
+      <p class="tagline">塗って出す日程調整</p>
+    </div>
+    <img class="mast-logo" id="logo" alt="" hidden>
   </header>
 
   <p class="notice err" id="err" role="alert"></p>
@@ -52,6 +55,9 @@
       <button class="btn-sm" id="zoomOut" aria-label="表示をせまくする">−</button>
       <span class="zoomlabel" id="zoomLabel">×1</span>
       <button class="btn-sm" id="zoomIn" aria-label="表示をひろげる">＋</button>
+      <span style="width:8px"></span>
+      <button class="btn-sm" id="left" aria-label="表を左に動かす" disabled>◀</button>
+      <button class="btn-sm" id="right" aria-label="表を右に動かす" disabled>▶</button>
       <span class="spacer"></span>
       <button class="btn-sm" id="clear">全部消す</button>
     </div>
@@ -111,8 +117,17 @@ function syncHistoryButtons() {
   $('#redo').disabled = !grid.canRedo();
 }
 
+function syncScrollButtons() {
+  $('#left').disabled = !grid.canScrollLeft();
+  $('#right').disabled = !grid.canScrollRight();
+}
+
 function buildGrid() {
-  grid = new PaintGrid($('#grid'), ev, { onChange: updateStat, onHistory: syncHistoryButtons });
+  grid = new PaintGrid($('#grid'), ev, {
+    onChange: updateStat,
+    onHistory: syncHistoryButtons,
+    onScroll: syncScrollButtons,
+  });
   updateStat();
   syncHistoryButtons();
 
@@ -125,6 +140,8 @@ function buildGrid() {
 
   $('#undo').addEventListener('click', () => grid.undo());
   $('#redo').addEventListener('click', () => grid.redo());
+  $('#left').addEventListener('click', () => grid.scrollHours(-1));
+  $('#right').addEventListener('click', () => grid.scrollHours(1));
 
   let zoom = 1;
   const applyZoom = () => { grid.fit(zoom); $('#zoomLabel').textContent = '×' + zoom; };
@@ -141,6 +158,12 @@ function fillHeader() {
   $('#range').textContent =
     `${fmtDate(d1)}(${fmtDow(d1)}) 〜 ${fmtDate(d2)}(${fmtDow(d2)})　${fmtTime(ev.start_min)}–${fmtTime(ev.end_min)}　${ev.slot_min}分きざみ`;
   if (ev.memo) $('#memo').textContent = ev.memo;
+  if (ev.image_url) {
+    const logo = $('#logo');
+    logo.src = ev.image_url;
+    logo.alt = ev.title;
+    logo.hidden = false;
+  }
 }
 
 async function boot() {
