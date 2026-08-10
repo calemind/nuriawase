@@ -1,219 +1,395 @@
-@charset "utf-8";
+/* ぬりあわせ / 共通スクリプト */
 
-:root {
-  --ink: #131a24;
-  --ink-2: #3d4a60;
-  --ink-3: #77839a;
-  --paper: #f2f4f8;
-  --surface: #ffffff;
-  --line: #dfe4ee;
-  --line-strong: #b9c2d4;
+/* ---------- 小道具 ---------- */
+export const $ = (sel, root = document) => root.querySelector(sel);
+export const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+export const qs = (key) => new URLSearchParams(location.search).get(key);
 
-  --yes: #2e5fe8;          /* 出席可能 */
-  --yes-soft: #dbe5ff;
-  --maybe: #eda50f;        /* 未定 */
-  --maybe-soft: #fceecb;
-  --danger: #c0392b;
-
-  --cw: 8px;               /* 1コマの幅 (JSが上書き) */
-  --rowh: 34px;
-  --label: 92px;
-  --radius: 10px;
-
-  --sans: "Noto Sans JP", system-ui, -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
-  --display: "Zen Kaku Gothic New", var(--sans);
-  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+export async function api(path, method = 'GET', body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* noop */ }
+  if (!res.ok) throw new Error(data?.error || '通信に失敗しました。時間をおいてもう一度お試しください。');
+  return data;
 }
 
-* { box-sizing: border-box; }
+const DOW = ['日', '月', '火', '水', '木', '金', '土'];
+export const dowOf = (d) => new Date(d + 'T00:00:00').getDay();
+export const fmtDate = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+export const fmtDow = (d) => DOW[dowOf(d)];
+export const fmtTime = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+/** コマ番号 -> 時刻(分) */
+export const slotMinAt = (ev, i) => ev.start_min + i * ev.slot_min;
+/** 「8/12(火) 19:00–20:30」 */
+export const fmtRange = (ev, date, s, e) =>
+  `${fmtDate(date)}(${fmtDow(date)}) ${fmtTime(slotMinAt(ev, s))}–${fmtTime(slotMinAt(ev, e))}`;
 
-html, body {
-  margin: 0;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--sans);
-  font-size: 15px;
-  line-height: 1.7;
-  -webkit-text-size-adjust: 100%;
+export const blankSlots = (ev) =>
+  Object.fromEntries(ev.dates.map((d) => [d, '0'.repeat(ev.slots_per_day)]));
+
+/* ---------- グリッド ---------- */
+
+const LABELS = { 0: 'なし', 1: '出席可能', 2: '未定' };
+export const stateLabel = (v) => LABELS[v] ?? '不明';
+
+/** 行をまたぐと判定するまでの余白(px)。指の縦ぶれを吸収する */
+const ROW_GUARD = 11;
+/** 履歴の上限 */
+const HISTORY_MAX = 60;
+
+/**
+ * 塗れるシフト表。
+ *   new PaintGrid(container, event, { readOnly, onChange, onHistory })
+ */
+export class PaintGrid {
+  constructor(host, ev, opts = {}) {
+    this.ev = ev;
+    this.readOnly = !!opts.readOnly;
+    this.onChange = opts.onChange || (() => {});
+    this.onHistory = opts.onHistory || (() => {});
+    this.tool = '1';
+    this.zoom = 1;
+    this.data = blankSlots(ev);
+    this.cellsByDate = new Map();
+    this.rowsMeta = [];
+
+    host.innerHTML = '';
+    this.box = el('div', 'gridbox' + (this.readOnly ? ' readonly' : ''));
+    this.scroll = el('div', 'gridscroll');
+    this.inner = el('div', 'gridinner');
+    this.scroll.append(this.inner);
+    this.box.append(this.scroll);
+    host.append(this.box);
+
+    this.#buildRuler();
+    this.#buildRows();
+    if (!this.readOnly) this.#bindPaint();
+
+    this.history = [{ ...this.data }];
+    this.hIndex = 0;
+
+    this._onResize = () => this.fit();
+    addEventListener('resize', this._onResize);
+    requestAnimationFrame(() => this.fit());
+  }
+
+  /* --- 描画 --- */
+  #buildRuler() {
+    const ev = this.ev;
+    const ruler = el('div', 'ruler');
+    const corner = el('div', 'corner', '時刻 →');
+    const ticks = el('div', 'ticks');
+    this.ticks = ticks;
+
+    for (let i = 0; i < ev.slots_per_day; i++) {
+      const m = slotMinAt(ev, i);
+      if (m % 60 !== 0 && i !== 0) continue;
+      const t = el('div', 'tick');
+      t.dataset.i = i;
+      t.append(el('b', null, `${Math.floor(m / 60)}`));
+      ticks.append(t);
+    }
+    ruler.append(corner, ticks);
+    this.inner.append(ruler);
+  }
+
+  #buildRows() {
+    const ev = this.ev;
+    const rows = el('div', 'rows');
+    ev.dates.forEach((date) => {
+      const dw = dowOf(date);
+      const row = el('div', 'grow' + (dw === 0 ? ' sun weekend' : dw === 6 ? ' sat weekend' : ''));
+      const label = el('div', 'rowlabel');
+      label.append(el('span', null, fmtDate(date)), el('span', 'dow', fmtDow(date)));
+      if (!this.readOnly) {
+        label.title = 'タップでこの日をまとめて塗る / 戻す';
+        label.addEventListener('click', () => this.toggleDay(date));
+      }
+      const cells = el('div', 'cells');
+      cells.dataset.date = date;
+      const list = [];
+      for (let i = 0; i < ev.slots_per_day; i++) {
+        const m = slotMinAt(ev, i + 1);
+        const c = el('div', 'cell' + (m % 60 === 0 ? ' h' : m % 30 === 0 ? ' hh' : ''));
+        c.dataset.v = '0';
+        c.dataset.i = i;
+        c.dataset.date = date;
+        cells.append(c);
+        list.push(c);
+      }
+      this.cellsByDate.set(date, list);
+      this.rowsMeta.push({ date, rowEl: row, cellsEl: cells });
+      row.append(label, cells);
+      rows.append(row);
+    });
+    this.rows = rows;
+    this.inner.append(rows);
+  }
+
+  /** 横幅にあわせてコマ幅を決める */
+  fit(zoom = this.zoom) {
+    this.zoom = zoom;
+    const labelW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--label')) || 92;
+    const avail = this.scroll.clientWidth - labelW - 2;
+    const base = Math.max(6, avail / this.ev.slots_per_day);
+    const cw = base * zoom;
+    this.box.style.setProperty('--cw', cw.toFixed(3) + 'px');
+    this.ticks.style.width = (cw * this.ev.slots_per_day) + 'px';
+    this.ticks.querySelectorAll('.tick').forEach((t) => {
+      t.style.left = (Number(t.dataset.i) * cw) + 'px';
+    });
+  }
+
+  /* --- 操作 --- */
+  setTool(v) { this.tool = String(v); }
+
+  /** 1マスだけ塗る。塗り替えが起きたら true */
+  #setCell(date, i, v) {
+    const s = this.data[date];
+    if (!s || s[i] === v) return false;
+    this.data[date] = s.slice(0, i) + v + s.slice(i + 1);
+    this.cellsByDate.get(date)[i].dataset.v = v;
+    return true;
+  }
+
+  /** 同じ行の from〜to を塗りつぶす（順不同でよい） */
+  #paintSpan(date, from, to) {
+    const a = Math.min(from, to);
+    const b = Math.max(from, to);
+    let hit = false;
+    for (let i = a; i <= b; i++) {
+      if (this.#setCell(date, i, this.tool)) hit = true;
+    }
+    if (hit) this._dirty = true;
+  }
+
+  /** 行と列の位置をあらかじめ測っておく（なぞっている間の再計測を避ける） */
+  #measure() {
+    const rows = this.rowsMeta.map((r) => {
+      const rect = r.rowEl.getBoundingClientRect();
+      return { date: r.date, top: rect.top, bottom: rect.bottom };
+    });
+    const first = this.rowsMeta[0].cellsEl.getBoundingClientRect();
+    return { rows, left: first.left, width: first.width };
+  }
+
+  /** 画面上の座標を「何日目の何コマ目か」に変換する */
+  #locate(x, y, lockDate) {
+    const m = this._m;
+    if (!m) return null;
+
+    let date = lockDate;
+    const cand = m.rows.find((r) => y >= r.top && y < r.bottom);
+    if (!date) {
+      if (!cand) return null;
+      date = cand.date;
+    } else if (cand && cand.date !== date) {
+      // はっきり別の行に入ったときだけ乗り換える
+      if (y >= cand.top + ROW_GUARD && y <= cand.bottom - ROW_GUARD) date = cand.date;
+    }
+
+    const n = this.ev.slots_per_day;
+    const cw = m.width / n;
+    let i = Math.floor((x - m.left) / cw);
+    if (i < 0) i = 0;
+    if (i >= n) i = n - 1;
+    return { date, index: i };
+  }
+
+  #bindPaint() {
+    const start = (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      if (!target || !target.classList.contains('cell')) return;
+      e.preventDefault();
+
+      this._m = this.#measure();
+      const hit = this.#locate(e.clientX, e.clientY, null);
+      if (!hit) { this._m = null; return; }
+
+      this.painting = true;
+      this._dirty = false;
+      this._lockDate = hit.date;
+      this._lastIndex = hit.index;
+      this.rows.setPointerCapture?.(e.pointerId);
+      this.#paintSpan(hit.date, hit.index, hit.index);
+    };
+
+    const move = (e) => {
+      if (!this.painting) return;
+      e.preventDefault();
+      const hit = this.#locate(e.clientX, e.clientY, this._lockDate);
+      if (!hit) return;
+      if (hit.date === this._lockDate) {
+        // 通知が飛んでも間が抜けないよう、前回位置からまとめて塗る
+        this.#paintSpan(hit.date, this._lastIndex, hit.index);
+      } else {
+        this._lockDate = hit.date;
+        this.#paintSpan(hit.date, hit.index, hit.index);
+      }
+      this._lastIndex = hit.index;
+    };
+
+    const end = () => {
+      if (!this.painting) return;
+      this.painting = false;
+      this._m = null;
+      if (this._dirty) this.#commit();
+    };
+
+    this.rows.addEventListener('pointerdown', start);
+    this.rows.addEventListener('pointermove', move);
+    this.rows.addEventListener('pointerup', end);
+    this.rows.addEventListener('pointercancel', end);
+    this.rows.addEventListener('lostpointercapture', end);
+    this.rows.addEventListener('contextmenu', (e) => { if (this.painting) e.preventDefault(); });
+  }
+
+  /** 1日まるごと 塗る/戻す */
+  toggleDay(date) {
+    const n = this.ev.slots_per_day;
+    const all = this.tool.repeat(n);
+    const next = this.data[date] === all ? '0'.repeat(n) : all;
+    if (this.data[date] === next) return;
+    this.data[date] = next;
+    this.cellsByDate.get(date).forEach((c, i) => { c.dataset.v = next[i]; });
+    this.#commit();
+  }
+
+  clearAll() {
+    const blank = blankSlots(this.ev);
+    let changed = false;
+    for (const d of this.ev.dates) if (this.data[d] !== blank[d]) changed = true;
+    if (!changed) return;
+    this.#apply(blank);
+    this.#commit();
+  }
+
+  /* --- 履歴 --- */
+  #apply(snap) {
+    for (const date of this.ev.dates) {
+      const s = snap[date] || '0'.repeat(this.ev.slots_per_day);
+      if (this.data[date] === s) continue;
+      this.data[date] = s;
+      this.cellsByDate.get(date).forEach((c, i) => { c.dataset.v = s[i]; });
+    }
+  }
+
+  #commit() {
+    this.history = this.history.slice(0, this.hIndex + 1);
+    this.history.push({ ...this.data });
+    if (this.history.length > HISTORY_MAX) this.history.shift();
+    this.hIndex = this.history.length - 1;
+    this.onChange();
+    this.onHistory();
+  }
+
+  canUndo() { return this.hIndex > 0; }
+  canRedo() { return this.hIndex < this.history.length - 1; }
+
+  undo() {
+    if (!this.canUndo()) return;
+    this.hIndex -= 1;
+    this.#apply(this.history[this.hIndex]);
+    this.onChange();
+    this.onHistory();
+  }
+
+  redo() {
+    if (!this.canRedo()) return;
+    this.hIndex += 1;
+    this.#apply(this.history[this.hIndex]);
+    this.onChange();
+    this.onHistory();
+  }
+
+  getData() { return { ...this.data }; }
+
+  /** 読み込み直後など、ここを履歴の起点にしたいときは keepHistory を渡さない */
+  setData(obj, keepHistory = false) {
+    const next = {};
+    for (const date of this.ev.dates) {
+      next[date] = obj?.[date] || '0'.repeat(this.ev.slots_per_day);
+    }
+    this.#apply(next);
+    if (!keepHistory) {
+      this.history = [{ ...this.data }];
+      this.hIndex = 0;
+      this.onHistory();
+    }
+  }
+
+  /** 塗ったコマ数 */
+  countBy(v) {
+    let n = 0;
+    for (const d of this.ev.dates) for (const ch of this.data[d]) if (ch === v) n++;
+    return n;
+  }
+
+  destroy() { removeEventListener('resize', this._onResize); }
 }
 
-.wrap { max-width: 900px; margin: 0 auto; padding: 20px 16px 96px; }
+/* ---------- 集計 ---------- */
 
-/* ---- ヘッダー ---- */
-.masthead { padding: 26px 0 18px; border-bottom: 2px solid var(--ink); margin-bottom: 22px; }
-.brand {
-  font-family: var(--display);
-  font-weight: 900;
-  font-size: 21px;
-  letter-spacing: .12em;
-  margin: 0;
-}
-.brand span { color: var(--yes); }
-.tagline { margin: 4px 0 0; font-size: 12px; color: var(--ink-3); letter-spacing: .06em; }
-
-h1 { font-family: var(--display); font-weight: 700; font-size: 25px; line-height: 1.4; margin: 0 0 6px; }
-h2 {
-  font-family: var(--display); font-weight: 700; font-size: 15px; letter-spacing: .08em;
-  margin: 34px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line-strong);
-  display: flex; align-items: baseline; gap: 10px;
-}
-h2 .count { font-family: var(--mono); font-size: 12px; color: var(--ink-3); font-weight: 400; }
-
-.lead { color: var(--ink-2); margin: 0 0 20px; }
-
-/* ---- カード / フォーム ---- */
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
-.card + .card { margin-top: 14px; }
-
-.field { margin-bottom: 16px; }
-.field:last-child { margin-bottom: 0; }
-label { display: block; font-size: 13px; font-weight: 700; color: var(--ink-2); margin-bottom: 6px; }
-.hint { font-size: 12px; color: var(--ink-3); font-weight: 400; margin-top: 5px; line-height: 1.6; }
-
-input[type=text], input[type=date], input[type=time], textarea, select {
-  width: 100%; padding: 11px 12px; font: inherit; color: var(--ink);
-  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px;
-}
-input[type=date], input[type=time], select { font-family: var(--mono); }
-textarea { resize: vertical; min-height: 76px; }
-input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible {
-  outline: 2px solid var(--yes); outline-offset: 2px;
-}
-.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-
-button {
-  font: inherit; font-weight: 700; cursor: pointer; border-radius: 8px;
-  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink);
-  padding: 10px 16px;
-}
-button:hover { border-color: var(--ink-3); }
-.btn-main {
-  background: var(--ink); border-color: var(--ink); color: #fff; width: 100%;
-  padding: 15px; font-size: 16px; letter-spacing: .05em;
-}
-.btn-main:hover { background: #000; }
-.btn-main:disabled { opacity: .5; cursor: progress; }
-.btn-sm { padding: 6px 11px; font-size: 13px; font-weight: 500; }
-
-/* ---- ツールバー ---- */
-.toolbar {
-  position: sticky; top: 0; z-index: 40;
-  background: rgba(242,244,248,.94); backdrop-filter: blur(6px);
-  border-bottom: 1px solid var(--line); margin: 0 -16px 12px; padding: 10px 16px;
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-}
-.tool {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 8px 13px; border-radius: 999px; border: 1px solid var(--line-strong);
-  background: var(--surface); font-size: 13px; font-weight: 700; color: var(--ink-2);
-}
-.tool .chip { width: 13px; height: 13px; border-radius: 3px; border: 1px solid rgba(0,0,0,.18); }
-.tool[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: #fff; }
-.tool[data-tool="1"] .chip { background: var(--yes); }
-.tool[data-tool="2"] .chip { background: var(--maybe); }
-.tool[data-tool="0"] .chip { background: repeating-linear-gradient(45deg,#fff,#fff 3px,#e6e9f0 3px,#e6e9f0 6px); }
-.spacer { flex: 1 1 auto; }
-
-/* ---- グリッド (署名要素) ---- */
-.gridbox { background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; }
-.gridscroll { overflow-x: auto; overscroll-behavior-x: contain; }
-.gridinner { width: max-content; min-width: 100%; }
-
-.ruler {
-  position: sticky; top: 0; z-index: 20;
-  display: flex; height: 26px; background: var(--surface);
-  border-bottom: 1px solid var(--line-strong);
-}
-.ruler .corner {
-  position: sticky; left: 0; z-index: 21; width: var(--label); flex: none;
-  background: var(--surface); border-right: 1px solid var(--line-strong);
-  font-family: var(--mono); font-size: 10px; color: var(--ink-3);
-  display: flex; align-items: center; justify-content: center; letter-spacing: .04em;
-}
-.ruler .ticks { position: relative; flex: none; height: 100%; }
-.tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--line-strong); }
-.tick b {
-  font-family: var(--mono); font-size: 10px; font-weight: 500; color: var(--ink-2);
-  padding-left: 3px; line-height: 26px; white-space: nowrap;
+/** 各日・各コマの人数を数える */
+export function tally(ev, responses) {
+  const out = {};
+  for (const d of ev.dates) {
+    const yes = new Array(ev.slots_per_day).fill(0);
+    const maybe = new Array(ev.slots_per_day).fill(0);
+    for (const r of responses) {
+      const s = r.slots[d];
+      if (!s) continue;
+      for (let i = 0; i < ev.slots_per_day; i++) {
+        if (s[i] === '1') yes[i]++;
+        else if (s[i] === '2') maybe[i]++;
+      }
+    }
+    out[d] = { yes, maybe };
+  }
+  return out;
 }
 
-.grow { display: flex; border-top: 1px solid var(--line); height: var(--rowh); }
-.grow.weekend .rowlabel { background: #f7f8fc; }
-.grow.sat .dow { color: #2b6cb0; }
-.grow.sun .dow { color: #b03030; }
+/**
+ * 指定した長さ(コマ数)ぶん通して参加できる人が多い時間帯を探す。
+ * 返り値: [{date, start, end, yes:[名前], maybe:[名前]}]
+ */
+export function bestWindows(ev, responses, lenSlots, limit = 6) {
+  const found = [];
+  for (const d of ev.dates) {
+    for (let s = 0; s + lenSlots <= ev.slots_per_day; s++) {
+      const yes = [], maybe = [];
+      for (const r of responses) {
+        const str = r.slots[d] || '';
+        let allYes = true, allOk = true;
+        for (let i = s; i < s + lenSlots; i++) {
+          const c = str[i] || '0';
+          if (c !== '1') allYes = false;
+          if (c === '0') { allOk = false; break; }
+        }
+        if (allYes) yes.push(r.name);
+        else if (allOk) maybe.push(r.name);
+      }
+      if (yes.length + maybe.length === 0) continue;
+      found.push({ date: d, start: s, end: s + lenSlots, yes, maybe, score: yes.length + maybe.length * 0.5 });
+    }
+  }
+  found.sort((a, b) => b.score - a.score || b.yes.length - a.yes.length || (a.date < b.date ? -1 : 1) || a.start - b.start);
 
-.rowlabel {
-  position: sticky; left: 0; z-index: 10; width: var(--label); flex: none;
-  background: var(--surface); border-right: 1px solid var(--line-strong);
-  display: flex; align-items: center; gap: 6px; padding: 0 8px;
-  font-family: var(--mono); font-size: 12px; cursor: pointer; user-select: none;
-}
-.rowlabel:hover { background: var(--yes-soft); }
-.rowlabel .dow { font-family: var(--sans); font-size: 11px; font-weight: 700; color: var(--ink-3); }
-
-.cells { display: flex; flex: none; touch-action: pan-y; }
-.cell { width: var(--cw); flex: none; border-right: 1px solid #eef1f6; background: var(--surface); }
-.cell.h { border-right-color: var(--line-strong); }
-.cell.hh { border-right-color: #eef1f6; border-right-style: dashed; }
-.cell[data-v="1"] { background: var(--yes); }
-.cell[data-v="2"] { background: var(--maybe); }
-
-.readonly .cells { touch-action: auto; }
-.readonly .rowlabel { cursor: default; }
-.readonly .rowlabel:hover { background: var(--surface); }
-
-/* ---- 集計バー ---- */
-.aggcell { width: var(--cw); flex: none; position: relative; background: var(--surface); border-right: 1px solid #eef1f6; }
-.aggcell.h { border-right-color: var(--line-strong); }
-.aggcell .bar { position: absolute; left: 0; right: 0; bottom: 0; }
-.aggcell .bar.y { background: var(--yes); }
-.aggcell .bar.m { background: var(--maybe); }
-.aggcell.best { box-shadow: inset 0 0 0 1px rgba(19,26,36,.35); }
-
-/* ---- 汎用 ---- */
-.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 10px 2px 0; }
-.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
-
-.notice { padding: 12px 14px; border-radius: 8px; font-size: 13px; line-height: 1.7; }
-.notice.err { background: #fdecea; color: #8c2a1c; border: 1px solid #f2c2ba; }
-.notice.ok { background: var(--yes-soft); color: #1c3a8f; border: 1px solid #b9cdff; }
-.notice.warn { background: var(--maybe-soft); color: #7a5300; border: 1px solid #f0d79a; }
-.notice:empty { display: none; }
-
-.linkbox { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-.linkbox input { font-family: var(--mono); font-size: 12px; background: var(--paper); }
-
-.item { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: var(--surface); }
-.item + .item { margin-top: 8px; }
-.item .who { font-weight: 700; }
-.item .meta { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
-.item .note { font-size: 13px; color: var(--ink-2); white-space: pre-wrap; margin-top: 4px; }
-
-.rank { display: flex; align-items: baseline; gap: 12px; }
-.rank .n { font-family: var(--mono); font-size: 12px; color: var(--ink-3); width: 22px; flex: none; }
-.rank .when { font-family: var(--mono); font-weight: 700; font-size: 15px; }
-.rank .cnt { font-size: 13px; color: var(--ink-2); margin-left: auto; text-align: right; }
-.rank .cnt b { color: var(--yes); font-size: 17px; font-family: var(--mono); }
-
-.empty { color: var(--ink-3); font-size: 13px; padding: 18px 4px; text-align: center; }
-.diffline { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
-.diffline .to1 { color: var(--yes); font-weight: 700; }
-.diffline .to2 { color: #a8760a; font-weight: 700; }
-.diffline .to0 { color: var(--ink-3); font-weight: 700; }
-
-.sticky-submit {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-  background: rgba(255,255,255,.96); backdrop-filter: blur(8px);
-  border-top: 1px solid var(--line-strong); padding: 12px 16px;
-}
-.sticky-submit .inner { max-width: 900px; margin: 0 auto; }
-
-@media (max-width: 560px) {
-  :root { --label: 76px; --rowh: 30px; }
-  h1 { font-size: 21px; }
-  .row2 { grid-template-columns: 1fr; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  * { animation: none !important; transition: none !important; }
+  const picked = [];
+  for (const w of found) {
+    if (picked.some((p) => p.date === w.date && w.start < p.end && p.start < w.end)) continue;
+    picked.push(w);
+    if (picked.length >= limit) break;
+  }
+  return picked;
 }
