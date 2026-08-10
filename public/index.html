@@ -43,6 +43,11 @@
 
   <div id="setup">
     <div class="card">
+      <div class="field" id="pwField" hidden>
+        <label for="pw">合言葉</label>
+        <input type="password" id="pw" autocomplete="current-password" placeholder="主催者だけが知っている合言葉">
+        <p class="hint">この日程調整ツールは、合言葉を知っている人だけが新しく作成できます。回答する人には必要ありません。</p>
+      </div>
       <div class="field">
         <label for="title">イベント名</label>
         <input type="text" id="title" maxlength="80" placeholder="例）11月の練習日程" autocomplete="off">
@@ -84,9 +89,9 @@
       <div class="field">
         <label for="logo">ロゴ画像<span style="font-weight:400;color:var(--ink-3)">（任意）</span></label>
         <input type="file" id="logo" accept="image/png,image/jpeg,image/webp">
-        <p class="hint">回答ページの右上に小さく表示します。PNG・JPEG・WebPに対応。大きい画像は自動で縮小します。</p>
+        <p class="hint">回答ページの右上に表示します。画面の広さにあわせて自動で大きさを調整します。PNG・JPEG・WebPに対応し、大きい画像は自動で縮小します。</p>
         <div id="logoPreview" hidden style="margin-top:10px">
-          <img id="logoImg" alt="選んだ画像" style="height:48px;width:auto;max-width:132px;object-fit:contain;border:1px solid var(--line);border-radius:6px;vertical-align:middle">
+          <img id="logoImg" class="logo-preview" alt="選んだ画像">
           <button class="btn-sm" id="logoClear" style="margin-left:10px">取り消す</button>
         </div>
       </div>
@@ -182,8 +187,15 @@ function renderMine() {
 }
 renderMine();
 
+/* 合言葉が設定されているときだけ入力欄を出す */
+let passwordRequired = false;
+api('/api/config').then((c) => {
+  passwordRequired = !!c.password_required;
+  $('#pwField').hidden = !passwordRequired;
+}).catch(() => { /* 取れなければ入力欄なしのまま */ });
+
 /* ロゴ画像: 選んだらプレビューを出し、送信前にブラウザ側で縮小する */
-const LOGO_MAX_PX = 400;
+const LOGO_MAX_PX = 640;
 let logoBlob = null;
 
 async function shrinkImage(file) {
@@ -240,7 +252,12 @@ $('#go').addEventListener('click', async () => {
     start_min: toMin($('#st').value),
     end_min: toMin($('#et').value),
     slot_min: Number($('#slot').value),
+    password: $('#pw').value,
   };
+  if (passwordRequired && !payload.password) {
+    $('#pw').focus();
+    return show('合言葉を入力してください。');
+  }
   if (!payload.title) return show('イベント名を入力してください。');
   if (!payload.start_date || !payload.end_date) return show('開始日と終了日を入力してください。');
   if (payload.end_min <= payload.start_min) return show('終了時刻は開始時刻より後にしてください。');
