@@ -41,19 +41,26 @@ export const blankSlots = (ev) =>
 const LABELS = { 0: 'なし', 1: '出席可能', 2: '未定' };
 export const stateLabel = (v) => LABELS[v] ?? '不明';
 
+/** 行をまたぐと判定するまでの余白(px)。指の縦ぶれを吸収する */
+const ROW_GUARD = 11;
+/** 履歴の上限 */
+const HISTORY_MAX = 60;
+
 /**
  * 塗れるシフト表。
- *   new PaintGrid(container, event, { readOnly })
+ *   new PaintGrid(container, event, { readOnly, onChange, onHistory })
  */
 export class PaintGrid {
   constructor(host, ev, opts = {}) {
     this.ev = ev;
     this.readOnly = !!opts.readOnly;
     this.onChange = opts.onChange || (() => {});
+    this.onHistory = opts.onHistory || (() => {});
     this.tool = '1';
     this.zoom = 1;
     this.data = blankSlots(ev);
     this.cellsByDate = new Map();
+    this.rowsMeta = [];
 
     host.innerHTML = '';
     this.box = el('div', 'gridbox' + (this.readOnly ? ' readonly' : ''));
@@ -66,6 +73,9 @@ export class PaintGrid {
     this.#buildRuler();
     this.#buildRows();
     if (!this.readOnly) this.#bindPaint();
+
+    this.history = [{ ...this.data }];
+    this.hIndex = 0;
 
     this._onResize = () => this.fit();
     addEventListener('resize', this._onResize);
@@ -80,7 +90,6 @@ export class PaintGrid {
     const ticks = el('div', 'ticks');
     this.ticks = ticks;
 
-    const perHour = 60 / ev.slot_min;
     for (let i = 0; i < ev.slots_per_day; i++) {
       const m = slotMinAt(ev, i);
       if (m % 60 !== 0 && i !== 0) continue;
@@ -89,7 +98,6 @@ export class PaintGrid {
       t.append(el('b', null, `${Math.floor(m / 60)}`));
       ticks.append(t);
     }
-    this.perHour = perHour;
     ruler.append(corner, ticks);
     this.inner.append(ruler);
   }
@@ -97,13 +105,13 @@ export class PaintGrid {
   #buildRows() {
     const ev = this.ev;
     const rows = el('div', 'rows');
-    ev.dates.forEach((date, di) => {
+    ev.dates.forEach((date) => {
       const dw = dowOf(date);
       const row = el('div', 'grow' + (dw === 0 ? ' sun weekend' : dw === 6 ? ' sat weekend' : ''));
       const label = el('div', 'rowlabel');
       label.append(el('span', null, fmtDate(date)), el('span', 'dow', fmtDow(date)));
       if (!this.readOnly) {
-        label.title = 'クリックでこの日を一括で塗る / 戻す';
+        label.title = 'タップでこの日をまとめて塗る / 戻す';
         label.addEventListener('click', () => this.toggleDay(date));
       }
       const cells = el('div', 'cells');
@@ -119,6 +127,7 @@ export class PaintGrid {
         list.push(c);
       }
       this.cellsByDate.set(date, list);
+      this.rowsMeta.push({ date, rowEl: row, cellsEl: cells });
       row.append(label, cells);
       rows.append(row);
     });
@@ -143,37 +152,100 @@ export class PaintGrid {
   /* --- 操作 --- */
   setTool(v) { this.tool = String(v); }
 
-  #paintCell(node) {
-    if (!node || !node.classList.contains('cell')) return;
-    if (node.dataset.v === this.tool) return;
-    node.dataset.v = this.tool;
-    const date = node.dataset.date;
-    const i = Number(node.dataset.i);
+  /** 1マスだけ塗る。塗り替えが起きたら true */
+  #setCell(date, i, v) {
     const s = this.data[date];
-    this.data[date] = s.slice(0, i) + this.tool + s.slice(i + 1);
-    this._dirty = true;
+    if (!s || s[i] === v) return false;
+    this.data[date] = s.slice(0, i) + v + s.slice(i + 1);
+    this.cellsByDate.get(date)[i].dataset.v = v;
+    return true;
+  }
+
+  /** 同じ行の from〜to を塗りつぶす（順不同でよい） */
+  #paintSpan(date, from, to) {
+    const a = Math.min(from, to);
+    const b = Math.max(from, to);
+    let hit = false;
+    for (let i = a; i <= b; i++) {
+      if (this.#setCell(date, i, this.tool)) hit = true;
+    }
+    if (hit) this._dirty = true;
+  }
+
+  /** 行と列の位置をあらかじめ測っておく（なぞっている間の再計測を避ける） */
+  #measure() {
+    const rows = this.rowsMeta.map((r) => {
+      const rect = r.rowEl.getBoundingClientRect();
+      return { date: r.date, top: rect.top, bottom: rect.bottom };
+    });
+    const first = this.rowsMeta[0].cellsEl.getBoundingClientRect();
+    return { rows, left: first.left, width: first.width };
+  }
+
+  /** 画面上の座標を「何日目の何コマ目か」に変換する */
+  #locate(x, y, lockDate) {
+    const m = this._m;
+    if (!m) return null;
+
+    let date = lockDate;
+    const cand = m.rows.find((r) => y >= r.top && y < r.bottom);
+    if (!date) {
+      if (!cand) return null;
+      date = cand.date;
+    } else if (cand && cand.date !== date) {
+      // はっきり別の行に入ったときだけ乗り換える
+      if (y >= cand.top + ROW_GUARD && y <= cand.bottom - ROW_GUARD) date = cand.date;
+    }
+
+    const n = this.ev.slots_per_day;
+    const cw = m.width / n;
+    let i = Math.floor((x - m.left) / cw);
+    if (i < 0) i = 0;
+    if (i >= n) i = n - 1;
+    return { date, index: i };
   }
 
   #bindPaint() {
     const start = (e) => {
-      const t = document.elementFromPoint(e.clientX, e.clientY);
-      if (!t || !t.classList.contains('cell')) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      if (!target || !target.classList.contains('cell')) return;
       e.preventDefault();
+
+      this._m = this.#measure();
+      const hit = this.#locate(e.clientX, e.clientY, null);
+      if (!hit) { this._m = null; return; }
+
       this.painting = true;
       this._dirty = false;
+      this._lockDate = hit.date;
+      this._lastIndex = hit.index;
       this.rows.setPointerCapture?.(e.pointerId);
-      this.#paintCell(t);
+      this.#paintSpan(hit.date, hit.index, hit.index);
     };
+
     const move = (e) => {
       if (!this.painting) return;
       e.preventDefault();
-      this.#paintCell(document.elementFromPoint(e.clientX, e.clientY));
+      const hit = this.#locate(e.clientX, e.clientY, this._lockDate);
+      if (!hit) return;
+      if (hit.date === this._lockDate) {
+        // 通知が飛んでも間が抜けないよう、前回位置からまとめて塗る
+        this.#paintSpan(hit.date, this._lastIndex, hit.index);
+      } else {
+        this._lockDate = hit.date;
+        this.#paintSpan(hit.date, hit.index, hit.index);
+      }
+      this._lastIndex = hit.index;
     };
+
     const end = () => {
       if (!this.painting) return;
       this.painting = false;
-      if (this._dirty) this.onChange();
+      this._m = null;
+      if (this._dirty) this.#commit();
     };
+
     this.rows.addEventListener('pointerdown', start);
     this.rows.addEventListener('pointermove', move);
     this.rows.addEventListener('pointerup', end);
@@ -184,26 +256,75 @@ export class PaintGrid {
 
   /** 1日まるごと 塗る/戻す */
   toggleDay(date) {
-    const cur = this.data[date];
-    const all = this.tool.repeat(this.ev.slots_per_day);
-    const next = cur === all ? '0'.repeat(this.ev.slots_per_day) : all;
+    const n = this.ev.slots_per_day;
+    const all = this.tool.repeat(n);
+    const next = this.data[date] === all ? '0'.repeat(n) : all;
+    if (this.data[date] === next) return;
     this.data[date] = next;
     this.cellsByDate.get(date).forEach((c, i) => { c.dataset.v = next[i]; });
-    this.onChange();
+    this.#commit();
   }
 
   clearAll() {
-    this.setData(blankSlots(this.ev));
+    const blank = blankSlots(this.ev);
+    let changed = false;
+    for (const d of this.ev.dates) if (this.data[d] !== blank[d]) changed = true;
+    if (!changed) return;
+    this.#apply(blank);
+    this.#commit();
+  }
+
+  /* --- 履歴 --- */
+  #apply(snap) {
+    for (const date of this.ev.dates) {
+      const s = snap[date] || '0'.repeat(this.ev.slots_per_day);
+      if (this.data[date] === s) continue;
+      this.data[date] = s;
+      this.cellsByDate.get(date).forEach((c, i) => { c.dataset.v = s[i]; });
+    }
+  }
+
+  #commit() {
+    this.history = this.history.slice(0, this.hIndex + 1);
+    this.history.push({ ...this.data });
+    if (this.history.length > HISTORY_MAX) this.history.shift();
+    this.hIndex = this.history.length - 1;
     this.onChange();
+    this.onHistory();
+  }
+
+  canUndo() { return this.hIndex > 0; }
+  canRedo() { return this.hIndex < this.history.length - 1; }
+
+  undo() {
+    if (!this.canUndo()) return;
+    this.hIndex -= 1;
+    this.#apply(this.history[this.hIndex]);
+    this.onChange();
+    this.onHistory();
+  }
+
+  redo() {
+    if (!this.canRedo()) return;
+    this.hIndex += 1;
+    this.#apply(this.history[this.hIndex]);
+    this.onChange();
+    this.onHistory();
   }
 
   getData() { return { ...this.data }; }
 
-  setData(obj) {
+  /** 読み込み直後など、ここを履歴の起点にしたいときは keepHistory を渡さない */
+  setData(obj, keepHistory = false) {
+    const next = {};
     for (const date of this.ev.dates) {
-      const s = obj?.[date] || '0'.repeat(this.ev.slots_per_day);
-      this.data[date] = s;
-      this.cellsByDate.get(date).forEach((c, i) => { c.dataset.v = s[i]; });
+      next[date] = obj?.[date] || '0'.repeat(this.ev.slots_per_day);
+    }
+    this.#apply(next);
+    if (!keepHistory) {
+      this.history = [{ ...this.data }];
+      this.hIndex = 0;
+      this.onHistory();
     }
   }
 
@@ -264,7 +385,6 @@ export function bestWindows(ev, responses, lenSlots, limit = 6) {
   }
   found.sort((a, b) => b.score - a.score || b.yes.length - a.yes.length || (a.date < b.date ? -1 : 1) || a.start - b.start);
 
-  // 重なりの強い候補は1つに絞る
   const picked = [];
   for (const w of found) {
     if (picked.some((p) => p.date === w.date && w.start < p.end && p.start < w.end)) continue;
