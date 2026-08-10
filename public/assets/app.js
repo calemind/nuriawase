@@ -56,6 +56,7 @@ export class PaintGrid {
     this.readOnly = !!opts.readOnly;
     this.onChange = opts.onChange || (() => {});
     this.onHistory = opts.onHistory || (() => {});
+    this.onScroll = opts.onScroll || (() => {});
     this.tool = '1';
     this.zoom = 1;
     this.data = blankSlots(ev);
@@ -79,6 +80,7 @@ export class PaintGrid {
 
     this._onResize = () => this.fit();
     addEventListener('resize', this._onResize);
+    this.scroll.addEventListener('scroll', () => this.onScroll(), { passive: true });
     requestAnimationFrame(() => this.fit());
   }
 
@@ -142,12 +144,30 @@ export class PaintGrid {
     const avail = this.scroll.clientWidth - labelW - 2;
     const base = Math.max(6, avail / this.ev.slots_per_day);
     const cw = base * zoom;
+    this.cw = cw;
     this.box.style.setProperty('--cw', cw.toFixed(3) + 'px');
     this.ticks.style.width = (cw * this.ev.slots_per_day) + 'px';
     this.ticks.querySelectorAll('.tick').forEach((t) => {
       t.style.left = (Number(t.dataset.i) * cw) + 'px';
     });
+    this.onScroll();
   }
+
+  /* --- 横スクロール --- */
+
+  /** あと何pxスクロールできるか */
+  #scrollRoom() {
+    return Math.max(0, this.scroll.scrollWidth - this.scroll.clientWidth);
+  }
+
+  /** n時間ぶん左右に動かす（負の数で左へ） */
+  scrollHours(n) {
+    const perHour = (this.cw || 8) * (60 / this.ev.slot_min);
+    this.scroll.scrollBy({ left: perHour * n, behavior: 'smooth' });
+  }
+
+  canScrollLeft() { return this.scroll.scrollLeft > 1; }
+  canScrollRight() { return this.scroll.scrollLeft < this.#scrollRoom() - 1; }
 
   /* --- 操作 --- */
   setTool(v) { this.tool = String(v); }
