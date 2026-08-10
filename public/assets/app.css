@@ -42,13 +42,19 @@ html, body {
 /* ---- ヘッダー ---- */
 .masthead {
   padding: 26px 0 18px; border-bottom: 2px solid var(--ink); margin-bottom: 22px;
-  display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
 .mast-text { min-width: 0; }
-.mast-logo {
-  flex: none; height: 48px; width: auto; max-width: 132px; object-fit: contain;
-  border-radius: 6px; align-self: center;
+/* 画面の広さに応じて、はみ出さない範囲でできるだけ大きく見せる */
+.mast-logo, .logo-preview {
+  flex: 0 1 auto; align-self: center;
+  height: clamp(54px, 11vw, 76px);
+  width: auto;
+  max-width: min(44%, 240px);
+  object-fit: contain;
+  border-radius: 8px;
 }
+.logo-preview { max-width: min(60%, 240px); vertical-align: middle; border: 1px solid var(--line); }
 .mast-logo[hidden] { display: none; }
 .brand {
   font-family: var(--display);
