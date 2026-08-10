@@ -45,6 +45,16 @@
       </div>
     </div>
 
+    <div class="card">
+      <label for="memo">回答者へのひとこと</label>
+      <p class="hint" style="margin-top:0">回答ページの上部に表示されます。ここだけは、公開したあとでも書き換えられます。</p>
+      <textarea id="memo" maxlength="500" placeholder="例）30分以上参加できる時間帯を塗ってください。"></textarea>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:10px">
+        <button class="btn-sm" id="saveMemo">ひとことを保存する</button>
+        <span class="hint" id="memoState" style="margin:0"></span>
+      </div>
+    </div>
+
     <h2>おすすめの時間帯 <span class="count" id="cnt"></span></h2>
     <div class="dur" id="dur" role="group" aria-label="ほしい所要時間"></div>
     <div id="best"></div>
@@ -99,6 +109,7 @@ function render() {
   $('#range').textContent =
     `${fmtDate(d1)}(${fmtDow(d1)}) 〜 ${fmtDate(d2)}(${fmtDow(d2)})　${fmtTime(ev.start_min)}–${fmtTime(ev.end_min)}　${ev.slot_min}分きざみ`;
   $('#voteUrl').value = `${location.origin}/vote.html?e=${ev.public_token}`;
+  $('#memo').value = ev.memo || '';
   $('#cnt').textContent = `${responses.length}人が回答`;
   $('#cnt2').textContent = `${responses.length}人`;
   $('#cnt3').textContent = `${logs.length}件`;
@@ -266,6 +277,24 @@ function renderLogs() {
     host.append(item);
   }
 }
+
+$('#saveMemo').addEventListener('click', async (e) => {
+  const btn = e.target;
+  const state = $('#memoState');
+  btn.disabled = true;
+  state.textContent = '保存しています…';
+  try {
+    const r = await api('/api/a/' + encodeURIComponent(token) + '/memo', 'PUT', { memo: $('#memo').value.trim() });
+    ev.memo = r.memo;
+    $('#memo').value = r.memo;
+    state.textContent = '保存しました。回答ページに反映されています。';
+  } catch (e2) {
+    state.textContent = e2.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { state.textContent = ''; }, 4000);
+  }
+});
 
 $('#copyVote').addEventListener('click', async (e) => {
   try {
